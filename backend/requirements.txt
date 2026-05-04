@@ -1,0 +1,36 @@
+# Core Framework
+llama-index
+
+# Document Parsing (Step 1)
+llama-index-readers-file
+PyMuPDF
+
+# Vector Database & Embeddings (Step 2)
+faiss-cpu
+llama-index-vector-stores-faiss
+llama-index-embeddings-huggingface
+
+# LLMs (Step 3 - The Brain)
+llama-index-llms-openai
+llama-index-llms-groq
+llama_parse
+
+# Web Framework
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Database
+motor
+pymongo
+
+# Authentication
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt==4.0.1
+
+# Storage
+supabase
+
+# Utils
+python-dotenv
