@@ -1,5 +1,11 @@
 # ChatPDF — AI-Powered Document Assistant
 
+<p align="center">
+  <a href="https://chatpdf-rag.vercel.app/">
+    <img src="./images/home.png" />
+  </a>
+</p>
+
 > Upload any text-based PDF and chat with it. Every cited fact links back to the **exact source rectangle** on the **exact page** — clicking a citation scrolls the in-app PDF viewer to that page and pulses a coloured highlight over the source bbox.
 
 Built for the **Powermind Hackathon** with a free-tier-friendly stack: **FastAPI**, **Next.js 16**, **Gemini 2.5 Flash**, **Supabase (Storage + pgvector)**, and **MongoDB Atlas**. Designed to run on Render's free tier (512 MB RAM, ephemeral disk) and Vercel's free tier.
@@ -26,16 +32,16 @@ Built for the **Powermind Hackathon** with a free-tier-friendly stack: **FastAPI
 
 ## Features
 
-| | |
-|---|---|
-| 🎯 **Generic-PDF RAG** | PyMuPDF extracts text blocks with per-page bounding boxes. Works on any text-based PDF — contracts, research papers, books, slide decks, financial reports. |
-| 📌 **Click-to-highlight citations** | Citations are structured `{page, bbox, snippet}` payloads. The frontend scrolls to the page and paints a translucent rectangle over the exact source. |
-| 💾 **Persistent vectors** | Chunks live in Supabase `pgvector`. Survives Render free-tier restarts. No per-user index directories on disk. |
-| 💬 **Conversational memory** | Last 6 turns of chat history are sent with every question. Follow-ups like *"break that down…"* are silently **condensed into standalone questions** before retrieval so they pull the right chunks. |
-| 🚫 **Honest refusals** | When the answer isn't in the document the model returns *"I could not find that in the document."* with **no citations attached** — no fake sources for hallucinated answers. |
-| 🔁 **Rate-limit-resilient** | Every Gemini call wraps a 5-attempt exponential-backoff retry that honours the server's `retry in Ns` hint. Free-tier RPM throttles don't break uploads. |
-| 🔐 **Per-user isolation** | JWT auth with bcrypt password hashing. Every pgvector retrieval is scoped to `(user_id, pdf_id)`. |
-| ⚡ **Streaming-ready chat history** | Chats and messages persist in MongoDB so users can resume conversations on any device. |
+|                                     |                                                                                                                                                                                                      |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🎯 **Generic-PDF RAG**              | PyMuPDF extracts text blocks with per-page bounding boxes. Works on any text-based PDF — contracts, research papers, books, slide decks, financial reports.                                          |
+| 📌 **Click-to-highlight citations** | Citations are structured `{page, bbox, snippet}` payloads. The frontend scrolls to the page and paints a translucent rectangle over the exact source.                                                |
+| 💾 **Persistent vectors**           | Chunks live in Supabase `pgvector`. Survives Render free-tier restarts. No per-user index directories on disk.                                                                                       |
+| 💬 **Conversational memory**        | Last 6 turns of chat history are sent with every question. Follow-ups like _"break that down…"_ are silently **condensed into standalone questions** before retrieval so they pull the right chunks. |
+| 🚫 **Honest refusals**              | When the answer isn't in the document the model returns _"I could not find that in the document."_ with **no citations attached** — no fake sources for hallucinated answers.                        |
+| 🔁 **Rate-limit-resilient**         | Every Gemini call wraps a 5-attempt exponential-backoff retry that honours the server's `retry in Ns` hint. Free-tier RPM throttles don't break uploads.                                             |
+| 🔐 **Per-user isolation**           | JWT auth with bcrypt password hashing. Every pgvector retrieval is scoped to `(user_id, pdf_id)`.                                                                                                    |
+| ⚡ **Streaming-ready chat history** | Chats and messages persist in MongoDB so users can resume conversations on any device.                                                                                                               |
 
 ---
 
@@ -43,36 +49,36 @@ Built for the **Powermind Hackathon** with a free-tier-friendly stack: **FastAPI
 
 ### Frontend
 
-| Layer | Tool |
-|---|---|
-| Framework | **Next.js 16** (App Router, Turbopack) |
-| Runtime | **React 19** |
+| Layer         | Tool                                                                                                                                                  |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Framework     | **Next.js 16** (App Router, Turbopack)                                                                                                                |
+| Runtime       | **React 19**                                                                                                                                          |
 | PDF Rendering | [`react-pdf`](https://github.com/wojtekmaj/react-pdf) **10.4.1** (pinned to `pdfjs-dist@5.4.296` to avoid the well-known worker/API version mismatch) |
-| Styling | CSS Modules + custom design tokens (dark theme, glassmorphism) |
-| State | React Context (`AuthContext`) + local state |
-| Deployment | **Vercel** (free tier) |
+| Styling       | CSS Modules + custom design tokens (dark theme, glassmorphism)                                                                                        |
+| State         | React Context (`AuthContext`) + local state                                                                                                           |
+| Deployment    | **Vercel** (free tier)                                                                                                                                |
 
 ### Backend
 
-| Layer | Tool |
-|---|---|
-| Framework | **FastAPI** + Uvicorn |
-| PDF parsing | **PyMuPDF** (`fitz`) — block-level text with bboxes |
-| LLM SDK | [`google-genai`](https://github.com/googleapis/python-genai) (supported successor to `google-generativeai`) |
-| Chat model | `gemini-2.5-flash` |
-| Embedding model | `gemini-embedding-001` at 768-d (Matryoshka), L2-normalized |
-| Auth | `python-jose` (JWT, HS256) + `passlib[bcrypt]` |
-| Mongo driver | `motor` (async) |
-| Supabase SDK | `supabase-py` |
-| Deployment | **Render** (free tier) — `render.yaml` Blueprint |
+| Layer           | Tool                                                                                                        |
+| --------------- | ----------------------------------------------------------------------------------------------------------- |
+| Framework       | **FastAPI** + Uvicorn                                                                                       |
+| PDF parsing     | **PyMuPDF** (`fitz`) — block-level text with bboxes                                                         |
+| LLM SDK         | [`google-genai`](https://github.com/googleapis/python-genai) (supported successor to `google-generativeai`) |
+| Chat model      | `gemini-2.5-flash`                                                                                          |
+| Embedding model | `gemini-embedding-001` at 768-d (Matryoshka), L2-normalized                                                 |
+| Auth            | `python-jose` (JWT, HS256) + `passlib[bcrypt]`                                                              |
+| Mongo driver    | `motor` (async)                                                                                             |
+| Supabase SDK    | `supabase-py`                                                                                               |
+| Deployment      | **Render** (free tier) — `render.yaml` Blueprint                                                            |
 
 ### Data Layer
 
-| Service | Role |
-|---|---|
-| **MongoDB Atlas** (M0 free) | Users, chats, messages, PDF metadata |
-| **Supabase Storage** | Raw PDF binary files (private bucket, served via short-lived JWT) |
-| **Supabase pgvector** | 768-d chunk embeddings + bbox metadata; IVFFlat cosine index |
+| Service                     | Role                                                              |
+| --------------------------- | ----------------------------------------------------------------- |
+| **MongoDB Atlas** (M0 free) | Users, chats, messages, PDF metadata                              |
+| **Supabase Storage**        | Raw PDF binary files (private bucket, served via short-lived JWT) |
+| **Supabase pgvector**       | 768-d chunk embeddings + bbox metadata; IVFFlat cosine index      |
 
 ---
 
@@ -188,7 +194,7 @@ sequenceDiagram
 
 - A strict system prompt forces:
   - **Citations**: every fact-bearing sentence must end with `[n]` referencing a numbered context block.
-  - **Refusal**: if the answer isn't in the context, output the exact phrase *"I could not find that in the document."*
+  - **Refusal**: if the answer isn't in the context, output the exact phrase _"I could not find that in the document."_
   - **No hallucination**: do not reference external knowledge.
 - The retrieved chunks are formatted as `[1] (page 3)\n<text>` blocks and prepended to the user's original (un-condensed) question.
 - Chat history (last 6 turns) is included as proper `Content(role=user/model)` parts.
@@ -211,13 +217,13 @@ sequenceDiagram
 
 ## Acceptance Behaviour
 
-| # | Question type | How the system handles it |
-|---|---|---|
-| 1 | Grounded fact (*"What are the major business segments?"*) | pgvector top-5 retrieval → grounded prompt with mandatory `[n]` citations → structured `{page, bbox}` citations rendered as clickable badges |
-| 2 | Numeric (*"Consolidated total income in H1-26?"*) | Same path; `temperature=0.1` + system prompt forbids guessing; refusal triggers cleanly if the figure isn't in retrieved context |
-| 3 | Cross-section (*"Drivers for EBITDA changes?"*) | top-k=5 surfaces multiple supporting chunks; model can cite `[1,3]` and we render both badges |
-| 4 | Negative control (*"What is the CEO's email?"*) | Model returns the exact refusal phrase; `chat_engine` detects it and emits **zero citations** |
-| 5 | Conversational follow-up (*"Break that down…"*) | `condense_question()` rewrites it into a standalone form before embedding, so the right chunks are retrieved |
+| #   | Question type                                             | How the system handles it                                                                                                                    |
+| --- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Grounded fact (_"What are the major business segments?"_) | pgvector top-5 retrieval → grounded prompt with mandatory `[n]` citations → structured `{page, bbox}` citations rendered as clickable badges |
+| 2   | Numeric (_"Consolidated total income in H1-26?"_)         | Same path; `temperature=0.1` + system prompt forbids guessing; refusal triggers cleanly if the figure isn't in retrieved context             |
+| 3   | Cross-section (_"Drivers for EBITDA changes?"_)           | top-k=5 surfaces multiple supporting chunks; model can cite `[1,3]` and we render both badges                                                |
+| 4   | Negative control (_"What is the CEO's email?"_)           | Model returns the exact refusal phrase; `chat_engine` detects it and emits **zero citations**                                                |
+| 5   | Conversational follow-up (_"Break that down…"_)           | `condense_question()` rewrites it into a standalone form before embedding, so the right chunks are retrieved                                 |
 
 ---
 
@@ -338,13 +344,13 @@ The repo is set up so both services can deploy from GitHub with zero CLI command
 2. **New +** → **Blueprint** → select your repo → branch `main`. Render reads [`render.yaml`](render.yaml) and creates a service called `chatpdf-backend`.
 3. On the new service's **Environment** tab, fill in the secrets marked `sync: false`:
 
-   | Key             | Value                                                                      |
-   | --------------- | -------------------------------------------------------------------------- |
-   | `MONGODB_URI`   | your Atlas connection string                                               |
-   | `SUPABASE_URL`  | `https://<project>.supabase.co`                                            |
-   | `SUPABASE_KEY`  | service_role JWT (recommended for backend writes)                          |
-   | `GEMINI_API_KEY`| your Gemini key                                                            |
-   | `CORS_ORIGINS`  | `https://<your-app>.vercel.app,http://localhost:3000` *(fill after step below)* |
+   | Key              | Value                                                                           |
+   | ---------------- | ------------------------------------------------------------------------------- |
+   | `MONGODB_URI`    | your Atlas connection string                                                    |
+   | `SUPABASE_URL`   | `https://<project>.supabase.co`                                                 |
+   | `SUPABASE_KEY`   | service_role JWT (recommended for backend writes)                               |
+   | `GEMINI_API_KEY` | your Gemini key                                                                 |
+   | `CORS_ORIGINS`   | `https://<your-app>.vercel.app,http://localhost:3000` _(fill after step below)_ |
 
 4. Trigger a **Manual Deploy → Deploy latest commit**. First build ~3–5 min.
 5. Note the service URL (e.g. `https://chatpdf-backend.onrender.com`).
@@ -379,25 +385,25 @@ Save — Render restarts automatically (~30 s).
 
 ### Backend (`backend/.env`)
 
-| Variable | Required | Description |
-|---|---|---|
-| `MONGODB_URI` | ✅ | Mongo connection string (Atlas works) |
-| `SUPABASE_URL` | ✅ | `https://<project>.supabase.co` |
-| `SUPABASE_KEY` | ✅ | service_role JWT (recommended) or anon key |
-| `SUPABASE_BUCKET` | | Storage bucket name (default `pdfs`) |
-| `GEMINI_API_KEY` | ✅ | Get at https://aistudio.google.com/app/apikey |
-| `GEMINI_CHAT_MODEL` | | Override (default `gemini-2.5-flash`) |
-| `GEMINI_EMBED_MODEL` | | Override (default `gemini-embedding-001`) |
-| `JWT_SECRET` | ✅ | Random long string |
-| `JWT_ALGORITHM` | | Default `HS256` |
-| `JWT_EXPIRY_HOURS` | | Default `72` |
-| `CORS_ORIGINS` | | Comma-separated list (default localhost) |
+| Variable             | Required | Description                                   |
+| -------------------- | -------- | --------------------------------------------- |
+| `MONGODB_URI`        | ✅       | Mongo connection string (Atlas works)         |
+| `SUPABASE_URL`       | ✅       | `https://<project>.supabase.co`               |
+| `SUPABASE_KEY`       | ✅       | service_role JWT (recommended) or anon key    |
+| `SUPABASE_BUCKET`    |          | Storage bucket name (default `pdfs`)          |
+| `GEMINI_API_KEY`     | ✅       | Get at https://aistudio.google.com/app/apikey |
+| `GEMINI_CHAT_MODEL`  |          | Override (default `gemini-2.5-flash`)         |
+| `GEMINI_EMBED_MODEL` |          | Override (default `gemini-embedding-001`)     |
+| `JWT_SECRET`         | ✅       | Random long string                            |
+| `JWT_ALGORITHM`      |          | Default `HS256`                               |
+| `JWT_EXPIRY_HOURS`   |          | Default `72`                                  |
+| `CORS_ORIGINS`       |          | Comma-separated list (default localhost)      |
 
 ### Frontend (`frontend/.env.local`)
 
-| Variable | Required | Description |
-|---|---|---|
-| `NEXT_PUBLIC_API_URL` | ✅ | Backend base URL (e.g. `https://chatpdf-backend.onrender.com`) |
+| Variable              | Required | Description                                                    |
+| --------------------- | -------- | -------------------------------------------------------------- |
+| `NEXT_PUBLIC_API_URL` | ✅       | Backend base URL (e.g. `https://chatpdf-backend.onrender.com`) |
 
 ---
 
@@ -448,27 +454,27 @@ See [`backend/migrations/0001_init.sql`](backend/migrations/0001_init.sql) for t
 
 ## Known Free-Tier Caveats
 
-| Service | Caveat | Mitigation |
-|---|---|---|
-| **Render free** | Sleeps after 15 min idle; first request post-sleep takes ~30 s | Acceptable for demo / personal use |
-| **Gemini free** | `gemini-embedding-001` ≈ 5 RPM / 100 RPD; `gemini-2.5-flash` ≈ 15 RPM | Retry/backoff handles RPM; for RPD use a second key or upgrade |
-| **Supabase free** | 500 MB DB / 1 GB Storage | Enough for personal use; upgrade for large corpora |
-| **MongoDB M0** | 512 MB | Plenty for chat history |
-| **react-pdf / pdfjs-dist** | Version skew between the two breaks the worker | We pin `pdfjs-dist@5.4.296` to match `react-pdf@10.4.1` |
+| Service                    | Caveat                                                                | Mitigation                                                     |
+| -------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------- |
+| **Render free**            | Sleeps after 15 min idle; first request post-sleep takes ~30 s        | Acceptable for demo / personal use                             |
+| **Gemini free**            | `gemini-embedding-001` ≈ 5 RPM / 100 RPD; `gemini-2.5-flash` ≈ 15 RPM | Retry/backoff handles RPM; for RPD use a second key or upgrade |
+| **Supabase free**          | 500 MB DB / 1 GB Storage                                              | Enough for personal use; upgrade for large corpora             |
+| **MongoDB M0**             | 512 MB                                                                | Plenty for chat history                                        |
+| **react-pdf / pdfjs-dist** | Version skew between the two breaks the worker                        | We pin `pdfjs-dist@5.4.296` to match `react-pdf@10.4.1`        |
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `429 RESOURCE_EXHAUSTED` in `[INGEST]` logs | Hit per-minute Gemini rate limit | The retry layer handles it — just wait. Upload completes slower. |
-| `429` and message includes `PerDayPerProject` | Daily quota exhausted | Use a different Gemini key or wait until next day |
-| Frontend shows "API version X does not match Worker version Y" | `pdfjs-dist` version drift | `npm install pdfjs-dist@5.4.296 --save-exact` and hard-reload |
-| Backend 401 on PDF view | `?token=` query param missing/expired | The frontend includes it via `getPdfViewUrl()`; check `localStorage` has a token |
-| Browser console shows CORS error | `CORS_ORIGINS` doesn't include the Vercel URL | Add it in Render's Environment tab; the service auto-restarts |
-| `relation "chunks" does not exist` | Migration not run | Open Supabase SQL editor and run `backend/migrations/0001_init.sql` |
-| "I could not find that in the document." on a question you *know* is answered | Retrieval missed; chunk text might have weird PDF artefacts | Try rephrasing; consider tightening `CHUNK_TARGET_CHARS` in `ingest.py` |
+| Symptom                                                                       | Likely cause                                                | Fix                                                                              |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `429 RESOURCE_EXHAUSTED` in `[INGEST]` logs                                   | Hit per-minute Gemini rate limit                            | The retry layer handles it — just wait. Upload completes slower.                 |
+| `429` and message includes `PerDayPerProject`                                 | Daily quota exhausted                                       | Use a different Gemini key or wait until next day                                |
+| Frontend shows "API version X does not match Worker version Y"                | `pdfjs-dist` version drift                                  | `npm install pdfjs-dist@5.4.296 --save-exact` and hard-reload                    |
+| Backend 401 on PDF view                                                       | `?token=` query param missing/expired                       | The frontend includes it via `getPdfViewUrl()`; check `localStorage` has a token |
+| Browser console shows CORS error                                              | `CORS_ORIGINS` doesn't include the Vercel URL               | Add it in Render's Environment tab; the service auto-restarts                    |
+| `relation "chunks" does not exist`                                            | Migration not run                                           | Open Supabase SQL editor and run `backend/migrations/0001_init.sql`              |
+| "I could not find that in the document." on a question you _know_ is answered | Retrieval missed; chunk text might have weird PDF artefacts | Try rephrasing; consider tightening `CHUNK_TARGET_CHARS` in `ingest.py`          |
 
 ---
 
