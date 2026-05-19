@@ -6,6 +6,19 @@ export function getApiBase() {
   return API_BASE;
 }
 
+/** Sync the token to both localStorage AND a cookie so middleware can read it. */
+function persistToken(token) {
+  if (typeof window === "undefined") return;
+  if (token) {
+    localStorage.setItem("token", token);
+    // SameSite=Lax; not HttpOnly so JS can clear it; max-age 7 days
+    document.cookie = `auth_token=${encodeURIComponent(token)}; path=/; max-age=${60 * 60 * 24 * 7}; SameSite=Lax`;
+  } else {
+    localStorage.removeItem("token");
+    document.cookie = "auth_token=; path=/; max-age=0; SameSite=Lax";
+  }
+}
+
 /**
  * fetch wrapper that adds auth + JSON handling.
  */
@@ -53,7 +66,7 @@ export async function register(email, name, password) {
     method: "POST",
     body: JSON.stringify({ email, name, password }),
   });
-  localStorage.setItem("token", data.access_token);
+  persistToken(data.access_token);
   return data;
 }
 
@@ -62,7 +75,7 @@ export async function login(email, password) {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
-  localStorage.setItem("token", data.access_token);
+  persistToken(data.access_token);
   return data;
 }
 
@@ -71,7 +84,7 @@ export async function getMe() {
 }
 
 export function logout() {
-  localStorage.removeItem("token");
+  persistToken(null); // clears both localStorage and cookie
 }
 
 // ── PDFs ───────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useAuth } from "./context/AuthContext";
@@ -16,7 +16,6 @@ import {
 } from "./lib/api";
 import styles from "./page.module.css";
 
-// react-pdf is client-only (uses canvas + a Web Worker), so skip SSR.
 const PdfViewer = dynamic(() => import("./components/PdfViewer"), {
   ssr: false,
   loading: () => <div className={styles.pdfLoading}>Loading PDF viewer…</div>,
@@ -34,41 +33,37 @@ export default function Home() {
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  // {page, bbox, page_width, page_height, snippet, key} — `key` forces a
-  // re-trigger of the highlight animation when the same citation is clicked twice.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [mobilePanel, setMobilePanel] = useState("chat");
   const [highlight, setHighlight] = useState(null);
 
   const messagesEndRef = useRef(null);
-  const fileInputRef = useRef(null);
+  const fileInputRef = useRef(null); // landing page drop zone input
+  const sidebarFileInputRef = useRef(null); // "＋ New" button in sidebar
   const inputRef = useRef(null);
 
-  // Redirect to login if not authenticated
+  // Client-side auth guard (middleware handles the server-side redirect)
   useEffect(() => {
-    if (!authLoading && !user) {
-      router.push("/login");
-    }
+    if (!authLoading && !user) router.replace("/login");
   }, [authLoading, user, router]);
 
-  // Load chats and PDFs
   useEffect(() => {
-    if (user) {
-      loadData();
-    }
+    if (activeChat && window.innerWidth < 900) setSidebarOpen(false);
+  }, [activeChat]);
+
+  useEffect(() => {
+    if (user) loadData();
   }, [user]);
 
-  // Scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   async function loadData() {
     try {
-      console.log("[APP] Loading chats and PDFs...");
       const [chatData, pdfData] = await Promise.all([listChats(), listPdfs()]);
       setChats(chatData);
       setPdfs(pdfData);
-      console.log(`[APP] Loaded ${chatData.length} chats, ${pdfData.length} PDFs`);
     } catch (err) {
       console.error("[APP] Failed to load data:", err);
     }
@@ -80,20 +75,12 @@ export default function Home() {
       return;
     }
     setUploading(true);
-    console.log(`[APP] ▶ Upload started: ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)`);
-    const t0 = performance.now();
     try {
-      console.log("[APP] Step 1 — uploading PDF...");
       const pdf = await uploadPdf(file);
-      console.log(`[APP] Step 2 — PDF uploaded (id=${pdf.id}), creating chat...`);
       const chat = await createChat(pdf.id);
-      console.log(`[APP] Step 3 — chat created (id=${chat.id}), refreshing data...`);
       await loadData();
-      console.log("[APP] Step 4 — opening chat...");
       await openChat(chat.id);
-      console.log(`[APP] ✅ Upload flow complete in ${((performance.now()-t0)/1000).toFixed(2)}s`);
     } catch (err) {
-      console.error(`[APP] ✗ Upload failed after ${((performance.now()-t0)/1000).toFixed(2)}s:`, err);
       alert("Upload failed: " + err.message);
     } finally {
       setUploading(false);
@@ -102,12 +89,11 @@ export default function Home() {
 
   async function openChat(chatId) {
     try {
-      console.log(`[APP] Opening chat: ${chatId}`);
       const chat = await getChat(chatId);
       setActiveChat(chat);
       setMessages(chat.messages || []);
       setHighlight(null);
-      console.log(`[APP] Chat opened: title="${chat.title}", ${(chat.messages||[]).length} messages`);
+      setMobilePanel("chat");
       setTimeout(() => inputRef.current?.focus(), 100);
     } catch (err) {
       console.error("[APP] Failed to open chat:", err);
@@ -125,24 +111,16 @@ export default function Home() {
       timestamp: new Date().toISOString(),
     };
 
-    console.log(`[APP] ▶ Sending message: ${userMsg.content.substring(0, 80)}...`);
-    const t0 = performance.now();
-
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setSending(true);
 
     try {
-      console.log("[APP] Calling sendMessage API...");
       const updated = await sendMessage(activeChat.id, userMsg.content);
-      const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
-      console.log(`[APP] ✅ Response received in ${elapsed}s — ${updated.messages.length} total messages, title=${updated.title}`);
       setMessages(updated.messages);
       setActiveChat(updated);
-      loadData(); // refresh sidebar
+      loadData();
     } catch (err) {
-      const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
-      console.error(`[APP] ✗ sendMessage FAILED after ${elapsed}s:`, err);
       setMessages((prev) => [
         ...prev,
         {
@@ -192,8 +170,8 @@ export default function Home() {
 
   function handleCitationClick(citation) {
     if (!citation || typeof citation !== "object") return;
-    // Bump `key` so re-clicking the same citation still re-triggers the pulse.
     setHighlight({ ...citation, key: Date.now() });
+    if (window.innerWidth < 600) setMobilePanel("pdf");
   }
 
   if (authLoading) {
@@ -209,14 +187,51 @@ export default function Home() {
 
   return (
     <div className={styles.appContainer}>
+      {/* ─── Sidebar Overlay (mobile/tablet backdrop) ─── */}
+      {sidebarOpen && (
+        <div
+          className={styles.sidebarOverlay}
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Hidden file input wired to the "+ New" sidebar button */}
+      <input
+        ref={sidebarFileInputRef}
+        type="file"
+        accept=".pdf"
+        hidden
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) handleFileUpload(file);
+          // Reset so the same file can be re-selected
+          e.target.value = "";
+        }}
+      />
+
       {/* ─── Sidebar ─── */}
-      <aside className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`}>
+      <aside
+        className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`}
+      >
         <div className={styles.sidebarHeader}>
           <div className={styles.sidebarLogo}>
             <svg width="28" height="28" viewBox="0 0 40 40" fill="none">
               <rect width="40" height="40" rx="10" fill="url(#sg)" />
-              <path d="M12 28V12h8a6 6 0 110 12h-8" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M16 20h4l4 8" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+              <path
+                d="M12 28V12h8a6 6 0 110 12h-8"
+                stroke="#fff"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M16 20h4l4 8"
+                stroke="#fff"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
               <defs>
                 <linearGradient id="sg" x1="0" y1="0" x2="40" y2="40">
                   <stop stopColor="#7c5cfc" />
@@ -226,20 +241,53 @@ export default function Home() {
             </svg>
             <span>ChatPDF</span>
           </div>
-          <button
-            className={styles.newChatBtn}
-            onClick={() => {
-              setActiveChat(null);
-              setMessages([]);
-            }}
-            title="New Chat"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            New
-          </button>
+          <div className={styles.sidebarHeaderRight}>
+            {/* "+ New" — triggers PDF upload directly */}
+            <button
+              className={styles.newChatBtn}
+              onClick={() => {
+                if (uploading) return;
+                sidebarFileInputRef.current?.click();
+              }}
+              disabled={uploading}
+              title="Upload a new PDF"
+            >
+              {uploading ? (
+                <div className={styles.uploadingDot} />
+              ) : (
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              )}
+              {uploading ? "Uploading…" : "New"}
+            </button>
+            <button
+              className={styles.sidebarCloseBtn}
+              onClick={() => setSidebarOpen(false)}
+              title="Close sidebar"
+              aria-label="Close sidebar"
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div className={styles.sidebarContent}>
@@ -254,21 +302,37 @@ export default function Home() {
                     onClick={() => openChat(chat.id)}
                   >
                     <div className={styles.chatItemIcon}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      >
+                        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
                       </svg>
                     </div>
                     <div className={styles.chatItemInfo}>
                       <span className={styles.chatItemTitle}>{chat.title}</span>
-                      <span className={styles.chatItemMeta}>{chat.pdf_filename}</span>
+                      <span className={styles.chatItemMeta}>
+                        {chat.pdf_filename}
+                      </span>
                     </div>
                     <button
                       className={styles.chatDeleteBtn}
                       onClick={(e) => handleDeleteChat(chat.id, e)}
                       title="Delete chat"
                     >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z"/>
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                      >
+                        <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z" />
                       </svg>
                     </button>
                   </div>
@@ -288,18 +352,38 @@ export default function Home() {
                     onClick={() => handleStartChatWithPdf(pdf.id)}
                   >
                     <div className={styles.chatItemIcon}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-                        <polyline points="14 2 14 8 20 8"/>
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      >
+                        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
                       </svg>
                     </div>
                     <div className={styles.chatItemInfo}>
-                      <span className={styles.chatItemTitle}>{pdf.filename}</span>
-                      <span className={styles.chatItemMeta}>{pdf.page_count} pages</span>
+                      <span className={styles.chatItemTitle}>
+                        {pdf.filename}
+                      </span>
+                      <span className={styles.chatItemMeta}>
+                        {pdf.page_count} pages
+                      </span>
                     </div>
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {chats.length === 0 && pdfs.length === 0 && (
+            <div className={styles.sidebarEmpty}>
+              <p>No PDFs yet.</p>
+              <p>
+                Click <strong>+ New</strong> to upload one.
+              </p>
             </div>
           )}
         </div>
@@ -311,35 +395,83 @@ export default function Home() {
             </div>
             <span className={styles.userName}>{user.name}</span>
           </div>
-          <button className={styles.logoutBtn} onClick={logoutUser} title="Logout">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
+          <button
+            className={styles.logoutBtn}
+            onClick={logoutUser}
+            title="Logout"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
             </svg>
           </button>
         </div>
       </aside>
-
-      {/* ─── Toggle button for mobile ─── */}
-      <button
-        className={styles.sidebarToggle}
-        onClick={() => setSidebarOpen(!sidebarOpen)}
-      >
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <line x1="3" y1="6" x2="21" y2="6"/>
-          <line x1="3" y1="12" x2="21" y2="12"/>
-          <line x1="3" y1="18" x2="21" y2="18"/>
-        </svg>
-      </button>
 
       {/* ─── Main Content ─── */}
       <main className={styles.mainContent}>
         {!activeChat ? (
           /* ─── Landing / Upload View ─── */
           <div className={styles.landingContainer}>
+            {/* Mobile topbar — only visible when sidebar is an overlay */}
+            <div className={styles.mobileTopbar}>
+              <button
+                className={styles.sidebarToggle}
+                onClick={() => setSidebarOpen(true)}
+                aria-label="Open sidebar"
+              >
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <line x1="3" y1="6" x2="21" y2="6" />
+                  <line x1="3" y1="12" x2="21" y2="12" />
+                  <line x1="3" y1="18" x2="21" y2="18" />
+                </svg>
+              </button>
+              <div className={styles.mobileLogoInline}>
+                <svg width="22" height="22" viewBox="0 0 40 40" fill="none">
+                  <rect width="40" height="40" rx="10" fill="url(#sgm)" />
+                  <path
+                    d="M12 28V12h8a6 6 0 110 12h-8"
+                    stroke="#fff"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M16 20h4l4 8"
+                    stroke="#fff"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <defs>
+                    <linearGradient id="sgm" x1="0" y1="0" x2="40" y2="40">
+                      <stop stopColor="#7c5cfc" />
+                      <stop offset="1" stopColor="#a78bfa" />
+                    </linearGradient>
+                  </defs>
+                </svg>
+                <span>ChatPDF</span>
+              </div>
+            </div>
+
             <div className={styles.landingContent}>
               <h1 className={styles.landingTitle}>
                 <span className={styles.sparkle}>✨</span>{" "}
-                <span className={styles.gradientText}>AI-Powered</span> PDF Assistant
+                <span className={styles.gradientText}>AI-Powered</span> PDF
+                Assistant
               </h1>
               <p className={styles.landingSubtitle}>
                 Upload any PDF and get instant, accurate answers with citations
@@ -347,7 +479,10 @@ export default function Home() {
 
               <div
                 className={`${styles.uploadZone} ${dragOver ? styles.uploadZoneDrag : ""} ${uploading ? styles.uploadZoneUploading : ""}`}
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOver(true);
+                }}
                 onDragLeave={() => setDragOver(false)}
                 onDrop={handleDrop}
                 onClick={() => !uploading && fileInputRef.current?.click()}
@@ -360,6 +495,7 @@ export default function Home() {
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) handleFileUpload(file);
+                    e.target.value = "";
                   }}
                 />
                 {uploading ? (
@@ -371,15 +507,24 @@ export default function Home() {
                 ) : (
                   <>
                     <div className={styles.uploadIcon}>
-                      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                      <svg
+                        width="48"
+                        height="48"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      >
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" />
                       </svg>
                     </div>
                     <p className={styles.uploadText}>
-                      Drop a file or{" "}
-                      <span className={styles.uploadLink}>upload</span>
+                      Drop a PDF or{" "}
+                      <span className={styles.uploadLink}>browse</span>
                     </p>
-                    <span className={styles.uploadHint}>PDF files up to 50MB</span>
+                    <span className={styles.uploadHint}>
+                      PDF files up to 50MB
+                    </span>
                   </>
                 )}
               </div>
@@ -406,119 +551,226 @@ export default function Home() {
         ) : (
           /* ─── Split View: PDF (Left) + Chat (Right) ─── */
           <div className={styles.splitViewContainer}>
-            {/* ─── PDF Viewer ─── */}
-            <div className={styles.pdfViewerContainer}>
+            {/* Mobile-only header with panel toggle */}
+            <div className={styles.splitMobileHeader}>
+              <button
+                className={styles.sidebarToggle}
+                onClick={() => setSidebarOpen(true)}
+                aria-label="Open sidebar"
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <line x1="3" y1="6" x2="21" y2="6" />
+                  <line x1="3" y1="12" x2="21" y2="12" />
+                  <line x1="3" y1="18" x2="21" y2="18" />
+                </svg>
+              </button>
+              <div className={styles.mobilePanelTabs}>
+                <button
+                  className={`${styles.panelTab} ${mobilePanel === "chat" ? styles.panelTabActive : ""}`}
+                  onClick={() => setMobilePanel("chat")}
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
+                  </svg>
+                  Chat
+                </button>
+                <button
+                  className={`${styles.panelTab} ${mobilePanel === "pdf" ? styles.panelTabActive : ""}`}
+                  onClick={() => setMobilePanel("pdf")}
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                  </svg>
+                  PDF
+                </button>
+              </div>
+              <span className={styles.splitMobileTitle}>
+                {activeChat.title}
+              </span>
+            </div>
+
+            {/* ─── PDF Viewer (left) ─── */}
+            <div
+              className={`${styles.pdfViewerContainer} ${mobilePanel === "pdf" ? styles.mobilePanelVisible : styles.mobilePanelHidden}`}
+            >
               <PdfViewer
                 fileUrl={getPdfViewUrl(activeChat.pdf_id)}
                 highlight={highlight}
               />
             </div>
 
-            {/* ─── Chat View ─── */}
-            <div className={styles.chatContainer}>
+            {/* ─── Chat (right) ─── */}
+            <div
+              className={`${styles.chatContainer} ${mobilePanel === "chat" ? styles.mobilePanelVisible : styles.mobilePanelHidden}`}
+            >
+              {/* Desktop chat header — no hamburger, just title + pdf name */}
               <div className={styles.chatHeader}>
-              <div className={styles.chatHeaderInfo}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                </svg>
-                <div>
-                  <h2 className={styles.chatTitle}>{activeChat.title}</h2>
-                  <span className={styles.chatPdfName}>{activeChat.pdf_filename}</span>
+                <div className={styles.chatHeaderInfo}>
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    style={{ flexShrink: 0 }}
+                  >
+                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                  </svg>
+                  <div className={styles.chatHeaderText}>
+                    <h2 className={styles.chatTitle}>{activeChat.title}</h2>
+                    <span className={styles.chatPdfName}>
+                      {activeChat.pdf_filename}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className={styles.messagesContainer}>
-              {messages.length === 0 && (
-                <div className={styles.emptyChat}>
-                  <div className={styles.emptyChatIcon}>💬</div>
-                  <h3>Start a conversation</h3>
-                  <p>Ask anything about <strong>{activeChat.pdf_filename}</strong></p>
-                </div>
-              )}
+              <div className={styles.messagesContainer}>
+                {messages.length === 0 && (
+                  <div className={styles.emptyChat}>
+                    <div className={styles.emptyChatIcon}>💬</div>
+                    <h3>Start a conversation</h3>
+                    <p>
+                      Ask anything about{" "}
+                      <strong>{activeChat.pdf_filename}</strong>
+                    </p>
+                  </div>
+                )}
 
-              {messages.map((msg, i) => (
-                <div
-                  key={i}
-                  className={`${styles.message} ${msg.role === "user" ? styles.messageUser : styles.messageAi}`}
-                  style={{ animationDelay: `${i * 0.05}s` }}
-                >
-                  {msg.role === "assistant" && (
-                    <div className={styles.messageAvatar}>
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                        <circle cx="12" cy="12" r="10"/>
-                        <path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/>
-                      </svg>
-                    </div>
-                  )}
-                  <div className={styles.messageBubble}>
-                    <div className={styles.messageContent}>
-                      {msg.content}
-                    </div>
-                    {msg.citations && msg.citations.length > 0 && (
-                      <div className={styles.citations}>
-                        {msg.citations.map((c, ci) => (
-                          <button
-                            type="button"
-                            key={ci}
-                            className={styles.citationBadge}
-                            onClick={() => handleCitationClick(c)}
-                            title={c.snippet || `Jump to page ${c.page}`}
-                          >
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
-                              <polyline points="14 2 14 8 20 8" />
-                            </svg>
-                            {c.label || `p${c.page}`}
-                          </button>
-                        ))}
+                {messages.map((msg, i) => (
+                  <div
+                    key={i}
+                    className={`${styles.message} ${msg.role === "user" ? styles.messageUser : styles.messageAi}`}
+                    style={{ animationDelay: `${i * 0.05}s` }}
+                  >
+                    {msg.role === "assistant" && (
+                      <div className={styles.messageAvatar}>
+                        <svg
+                          width="18"
+                          height="18"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                        >
+                          <circle cx="12" cy="12" r="10" />
+                          <path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01" />
+                        </svg>
                       </div>
                     )}
-                  </div>
-                </div>
-              ))}
-
-              {sending && (
-                <div className={`${styles.message} ${styles.messageAi}`}>
-                  <div className={styles.messageAvatar}>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <circle cx="12" cy="12" r="10"/>
-                      <path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/>
-                    </svg>
-                  </div>
-                  <div className={styles.messageBubble}>
-                    <div className={styles.typingIndicator}>
-                      <span /><span /><span />
+                    <div className={styles.messageBubble}>
+                      <div className={styles.messageContent}>{msg.content}</div>
+                      {msg.citations && msg.citations.length > 0 && (
+                        <div className={styles.citations}>
+                          {msg.citations.map((c, ci) => (
+                            <button
+                              type="button"
+                              key={ci}
+                              className={styles.citationBadge}
+                              onClick={() => handleCitationClick(c)}
+                              title={c.snippet || `Jump to page ${c.page}`}
+                            >
+                              <svg
+                                width="11"
+                                height="11"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                aria-hidden="true"
+                              >
+                                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                                <polyline points="14 2 14 8 20 8" />
+                              </svg>
+                              {c.label || `p${c.page}`}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
-                </div>
-              )}
+                ))}
 
-              <div ref={messagesEndRef} />
-            </div>
+                {sending && (
+                  <div className={`${styles.message} ${styles.messageAi}`}>
+                    <div className={styles.messageAvatar}>
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      >
+                        <circle cx="12" cy="12" r="10" />
+                        <path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01" />
+                      </svg>
+                    </div>
+                    <div className={styles.messageBubble}>
+                      <div className={styles.typingIndicator}>
+                        <span />
+                        <span />
+                        <span />
+                      </div>
+                    </div>
+                  </div>
+                )}
 
-            <form className={styles.inputBar} onSubmit={handleSend}>
-              <input
-                ref={inputRef}
-                type="text"
-                placeholder="Ask about your PDF..."
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                disabled={sending}
-                className={styles.chatInput}
-              />
-              <button
-                type="submit"
-                disabled={!input.trim() || sending}
-                className={styles.sendBtn}
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="22" y1="2" x2="11" y2="13" />
-                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                </svg>
-              </button>
-            </form>
+                <div ref={messagesEndRef} />
+              </div>
+
+              <form className={styles.inputBar} onSubmit={handleSend}>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  placeholder="Ask about your PDF..."
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  disabled={sending}
+                  className={styles.chatInput}
+                />
+                <button
+                  type="submit"
+                  disabled={!input.trim() || sending}
+                  className={styles.sendBtn}
+                >
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <line x1="22" y1="2" x2="11" y2="13" />
+                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                  </svg>
+                </button>
+              </form>
             </div>
           </div>
         )}
