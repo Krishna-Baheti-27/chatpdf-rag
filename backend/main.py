@@ -46,10 +46,16 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS — allow Next.js dev server
+# CORS — origins are configurable via CORS_ORIGINS=a,b,c (comma-separated).
+# Falls back to localhost for local dev.
+_origins_raw = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000",
+)
+_allow_origins = [o.strip() for o in _origins_raw.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

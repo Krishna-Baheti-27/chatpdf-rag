@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 import { useAuth } from "./context/AuthContext";
 import {
   listChats,
@@ -14,6 +15,12 @@ import {
   getPdfViewUrl,
 } from "./lib/api";
 import styles from "./page.module.css";
+
+// react-pdf is client-only (uses canvas + a Web Worker), so skip SSR.
+const PdfViewer = dynamic(() => import("./components/PdfViewer"), {
+  ssr: false,
+  loading: () => <div className={styles.pdfLoading}>Loading PDF viewer…</div>,
+});
 
 export default function Home() {
   const { user, loading: authLoading, logoutUser } = useAuth();
@@ -28,7 +35,9 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [currentPage, setCurrentPage] = useState("");
+  // {page, bbox, page_width, page_height, snippet, key} — `key` forces a
+  // re-trigger of the highlight animation when the same citation is clicked twice.
+  const [highlight, setHighlight] = useState(null);
 
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -97,7 +106,7 @@ export default function Home() {
       const chat = await getChat(chatId);
       setActiveChat(chat);
       setMessages(chat.messages || []);
-      setCurrentPage(""); // Reset page on new chat
+      setHighlight(null);
       console.log(`[APP] Chat opened: title="${chat.title}", ${(chat.messages||[]).length} messages`);
       setTimeout(() => inputRef.current?.focus(), 100);
     } catch (err) {
@@ -156,7 +165,7 @@ export default function Home() {
       if (activeChat?.id === chatId) {
         setActiveChat(null);
         setMessages([]);
-        setCurrentPage("");
+        setHighlight(null);
       }
       await loadData();
     } catch (err) {
@@ -181,19 +190,10 @@ export default function Home() {
     }
   }
 
-  function handleCitationClick(citationText) {
-    // Expected format: "p12:c19" (page 12) or similar.
-    // Try to extract the first sequence of digits right after 'p'
-    const match = citationText.match(/p(\d+)/i);
-    if (match && match[1]) {
-      setCurrentPage(match[1]);
-    } else {
-      // Fallback: just extract the first number found
-      const anyNum = citationText.match(/\d+/);
-      if (anyNum) {
-        setCurrentPage(anyNum[0]);
-      }
-    }
+  function handleCitationClick(citation) {
+    if (!citation || typeof citation !== "object") return;
+    // Bump `key` so re-clicking the same citation still re-triggers the pulse.
+    setHighlight({ ...citation, key: Date.now() });
   }
 
   if (authLoading) {
@@ -393,7 +393,7 @@ export default function Home() {
                 <div className={styles.featureCard}>
                   <div className={styles.featureIcon}>⚡</div>
                   <h3>Lightning Fast</h3>
-                  <p>Powered by Llama 3.3 70B & FAISS vector search</p>
+                  <p>Powered by Gemini & Supabase pgvector</p>
                 </div>
                 <div className={styles.featureCard}>
                   <div className={styles.featureIcon}>🔒</div>
@@ -408,10 +408,9 @@ export default function Home() {
           <div className={styles.splitViewContainer}>
             {/* ─── PDF Viewer ─── */}
             <div className={styles.pdfViewerContainer}>
-              <iframe
-                src={getPdfViewUrl(activeChat.pdf_id, currentPage)}
-                className={styles.pdfIframe}
-                title="PDF Viewer"
+              <PdfViewer
+                fileUrl={getPdfViewUrl(activeChat.pdf_id)}
+                highlight={highlight}
               />
             </div>
 
@@ -460,14 +459,19 @@ export default function Home() {
                     {msg.citations && msg.citations.length > 0 && (
                       <div className={styles.citations}>
                         {msg.citations.map((c, ci) => (
-                          <span
+                          <button
+                            type="button"
                             key={ci}
                             className={styles.citationBadge}
                             onClick={() => handleCitationClick(c)}
-                            title="Click to jump to this page in the PDF"
+                            title={c.snippet || `Jump to page ${c.page}`}
                           >
-                            📄 {c}
-                          </span>
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                              <polyline points="14 2 14 8 20 8" />
+                            </svg>
+                            {c.label || `p${c.page}`}
+                          </button>
                         ))}
                       </div>
                     )}

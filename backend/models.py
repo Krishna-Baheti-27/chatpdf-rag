@@ -2,9 +2,10 @@
 Pydantic models for request / response validation and MongoDB document shapes.
 """
 
-from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List, Literal
 from datetime import datetime
+from typing import List, Literal, Optional
+
+from pydantic import BaseModel, EmailStr, Field
 
 
 # ---------------------------------------------------------------------------
@@ -48,10 +49,19 @@ class PDFOut(BaseModel):
 # ---------------------------------------------------------------------------
 # Chats
 # ---------------------------------------------------------------------------
+class Citation(BaseModel):
+    label: str                      # "p3#1"
+    page: int
+    bbox: List[float]               # [x0, y0, x1, y1] in PDF points
+    page_width: float
+    page_height: float
+    snippet: Optional[str] = None
+
+
 class MessageOut(BaseModel):
     role: Literal["user", "assistant"]
     content: str
-    citations: List[str] = []
+    citations: List[Citation] = []
     timestamp: datetime
 
 

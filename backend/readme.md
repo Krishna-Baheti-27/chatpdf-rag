@@ -1,1 +1,0 @@
-Powermind Hackthone 

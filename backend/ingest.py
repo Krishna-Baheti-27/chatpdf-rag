@@ -1,161 +1,250 @@
 """
-PDF ingestion pipeline.
-Parses a PDF via LlamaParse, chunks it, builds a FAISS index, and persists to disk.
+PDF ingestion pipeline (PyMuPDF + Gemini embeddings + Supabase pgvector).
+
+Extracts text blocks with bounding boxes per page, groups them into
+overlapping chunks sized for retrieval, embeds them with Gemini's
+gemini-embedding-001 (768-d, L2-normalized), and writes them to
+Supabase's `chunks` table.
 """
 
-import os
-import sys
-import time
+from __future__ import annotations
+
 import logging
-from llama_parse import LlamaParse
-from llama_index.core.node_parser import MarkdownNodeParser
-import faiss
-from llama_index.core import VectorStoreIndex, StorageContext, Settings
-from llama_index.vector_stores.faiss import FaissVectorStore
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+import os
+import re
+import time
+from dataclasses import dataclass, field
+from typing import Iterable
+
+import fitz  # PyMuPDF
 from dotenv import load_dotenv
+
+from gemini_client import embed_documents
+from vector_store import insert_chunks
 
 load_dotenv()
 
 logger = logging.getLogger("chatpdf.ingest")
 
+# A chunk targets roughly this many characters; rule-of-thumb 4 chars ~= 1 token,
+# so ~1.6k chars ≈ 400 tokens — comfortably under gemini-embedding-001's 2048 token cap.
+CHUNK_TARGET_CHARS = 1600
+CHUNK_OVERLAP_CHARS = 200
+MIN_CHUNK_CHARS = 120  # drop tiny stray blocks
+
+
+@dataclass
+class TextSpan:
+    """A continuous run of text on a page, with its bounding box (PDF points)."""
+    page: int  # 1-indexed
+    text: str
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    page_width: float
+    page_height: float
+
+
+@dataclass
+class Chunk:
+    """A retrieval chunk: text plus the union bbox of the spans that built it."""
+    chunk_index: int
+    page: int
+    text: str
+    page_width: float
+    page_height: float
+    bbox: list[float] = field(default_factory=list)  # [x0, y0, x1, y1]
+
+
 # ---------------------------------------------------------------------------
-# Config (all secrets from .env, no hardcoded keys)
+# Extraction
 # ---------------------------------------------------------------------------
-DEFAULT_PERSIST_DIR = os.path.join(os.path.dirname(__file__), "faiss_db")
-EMBED_MODEL_NAME    = "BAAI/bge-small-en-v1.5"
-EMBED_DIM           = 384
-
-FINANCIAL_PARSING_PROMPT = """You are an elite Vision-Language Data Extraction Expert. Your sole directive is to meticulously analyze images, documents, and visual data structures and extract their contents with 100% fidelity. You operate under a STRICT ZERO-HALLUCINATION policy. You must extract ONLY the data visibly present in the provided image. Do NOT infer missing data, perform unrequested calculations, or introduce outside knowledge.
-
-Identify the type of visual structure(s) in the image and apply the following strict extraction protocols:
-
-1. For Charts and Graphs (Stacked, Bar, Line, Pie, Donut, Scatter):
-   - Read the title, axes labels, units, and legend. Map every color or marker to its exact category.
-   - Create a structured Markdown table. Do NOT squash grouped or stacked numbers into a single line.
-   - Rows represent distinct categories from the legend. Columns represent the varying axes.
-
-2. For Complex and Dense Tables:
-   - Reproduce the table in Markdown with absolute structural accuracy.
-   - Preserve hierarchical row headers using clear labeling.
-   - Capture all multi-level column headers and units exactly as shown.
-   - Extract all footnotes and edge-case text below the table.
-
-3. For Flowcharts, Trees, and Organizational Diagrams:
-   - Capture the logical flow, hierarchy, and relationships between elements.
-   - Use structured nested lists to represent parent-child nodes and directional steps.
-   - Include all text within nodes and on connecting arrows.
-
-4. For Maps, Infographics, and Spatial Data:
-   - Extract geographical data points, callouts, and localized text.
-   - Group logically related text and data pairs based on visual proximity.
-
-5. For Standard Text Blocks:
-   - Transcribe paragraphs perfectly, maintaining original spelling and punctuation.
-
-Absolute Constraints:
-- Do not summarize. Extract every visible data point.
-- If a number or label is unreadable, output [Unreadable] rather than guessing.
-- Deliver the final result in clean Markdown using appropriate headings to separate distinct visual elements.
-"""
+def _clean(text: str) -> str:
+    text = text.replace("­", "").replace("\r", "")
+    # Join hyphenated line breaks ("optimi-\nzation" -> "optimization").
+    text = re.sub(r"-\n(?=\w)", "", text)
+    # Convert single newlines to spaces, keep paragraph breaks.
+    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    return text.strip()
 
 
-def process_pdf_to_nodes(pdf_path: str):
-    """Parse a PDF with LlamaParse and split into searchable chunks."""
-    logger.info(f"[PARSE] Sending {pdf_path} to LlamaParse...")
-    t_start = time.time()
+def extract_spans(pdf_path: str) -> list[TextSpan]:
+    """Read a PDF and return a flat list of text spans with their bboxes."""
+    t0 = time.time()
+    spans: list[TextSpan] = []
 
-    llama_key = os.getenv("LLAMA_CLOUD_API_KEY")
-    if not llama_key:
-        raise EnvironmentError("LLAMA_CLOUD_API_KEY not set in .env")
-    os.environ["LLAMA_CLOUD_API_KEY"] = llama_key
+    with fitz.open(pdf_path) as doc:
+        for page_idx, page in enumerate(doc, start=1):
+            page_rect = page.rect
+            blocks = page.get_text("blocks")
+            # blocks: list of (x0, y0, x1, y1, text, block_no, block_type)
+            # block_type 0 = text, 1 = image — we keep text only.
+            for x0, y0, x1, y1, block_text, _bno, btype in blocks:
+                if btype != 0:
+                    continue
+                cleaned = _clean(block_text)
+                if not cleaned:
+                    continue
+                spans.append(
+                    TextSpan(
+                        page=page_idx,
+                        text=cleaned,
+                        x0=float(x0),
+                        y0=float(y0),
+                        x1=float(x1),
+                        y1=float(y1),
+                        page_width=float(page_rect.width),
+                        page_height=float(page_rect.height),
+                    )
+                )
 
-    parser = LlamaParse(
-        result_type="markdown",
-        use_vendor_multimodal_model=True,
-        vendor_multimodal_model_name="openai-gpt4o",
-        content_guideline_instruction=FINANCIAL_PARSING_PROMPT,
-        language="en",
-        verbose=False,
+    logger.info(
+        f"[PARSE] PyMuPDF extracted {len(spans)} text blocks in {time.time()-t0:.2f}s"
     )
-
-    try:
-        t0 = time.time()
-        documents = parser.load_data(pdf_path)
-        for page_num, doc in enumerate(documents, start=1):
-            doc.metadata["page_label"] = str(page_num)
-        logger.info(f"[PARSE] LlamaParse completed in {time.time()-t0:.2f}s — {len(documents)} pages extracted")
-    except Exception as e:
-        logger.exception(f"[PARSE] LlamaParse FAILED after {time.time()-t_start:.2f}s: {e}")
-        return []
-
-    t0 = time.time()
-    node_parser = MarkdownNodeParser()
-    nodes = node_parser.get_nodes_from_documents(documents)
-
-    for i, node in enumerate(nodes, start=1):
-        page = node.metadata.get("page_label", "Unknown")
-        node.metadata["chunk_id"] = i
-        node.metadata["formatted_citation"] = f"p{page}:c{i}"
-
-    logger.info(f"[PARSE] Chunked into {len(nodes)} nodes in {time.time()-t0:.2f}s")
-    logger.info(f"[PARSE] Total parse time: {time.time()-t_start:.2f}s")
-    return nodes
-
-
-def build_and_store_faiss_index(nodes, persist_dir: str | None = None):
-    """Embed chunks and persist a FAISS index to disk."""
-    persist_dir = persist_dir or DEFAULT_PERSIST_DIR
-    t_start = time.time()
-    logger.info(f"[FAISS] Building index → {persist_dir} ({len(nodes)} nodes)")
-
-    t0 = time.time()
-    logger.info(f"[FAISS] Loading embedding model: {EMBED_MODEL_NAME}")
-    embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
-    Settings.embed_model = embed_model
-    logger.info(f"[FAISS] Embedding model loaded in {time.time()-t0:.2f}s")
-
-    faiss_index  = faiss.IndexFlatL2(EMBED_DIM)
-    vector_store = FaissVectorStore(faiss_index=faiss_index)
-    storage_ctx  = StorageContext.from_defaults(vector_store=vector_store)
-
-    t0 = time.time()
-    logger.info(f"[FAISS] Embedding {len(nodes)} chunks...")
-    index = VectorStoreIndex(nodes, storage_context=storage_ctx)
-    logger.info(f"[FAISS] Embedding completed in {time.time()-t0:.2f}s")
-
-    t0 = time.time()
-    os.makedirs(persist_dir, exist_ok=True)
-    index.storage_context.persist(persist_dir=persist_dir)
-    logger.info(f"[FAISS] Index persisted in {time.time()-t0:.2f}s")
-    logger.info(f"[FAISS] Total build time: {time.time()-t_start:.2f}s")
-
-    return index
+    return spans
 
 
 # ---------------------------------------------------------------------------
-# CLI entry-point (unchanged for standalone use)
+# Chunking
+# ---------------------------------------------------------------------------
+def _union_bbox(spans: Iterable[TextSpan]) -> list[float]:
+    xs0, ys0, xs1, ys1 = [], [], [], []
+    for s in spans:
+        xs0.append(s.x0); ys0.append(s.y0); xs1.append(s.x1); ys1.append(s.y1)
+    return [min(xs0), min(ys0), max(xs1), max(ys1)]
+
+
+def chunk_spans(spans: list[TextSpan]) -> list[Chunk]:
+    """
+    Group spans into chunks of ~CHUNK_TARGET_CHARS.
+
+    Chunks never cross pages — this keeps the page/bbox single-valued per chunk
+    so the frontend can highlight exactly one rectangle on one page.
+    """
+    chunks: list[Chunk] = []
+    chunk_index = 0
+
+    by_page: dict[int, list[TextSpan]] = {}
+    for s in spans:
+        by_page.setdefault(s.page, []).append(s)
+
+    for page in sorted(by_page.keys()):
+        page_spans = by_page[page]
+        # Sort top-to-bottom, then left-to-right (fitz y grows downward).
+        page_spans.sort(key=lambda s: (round(s.y0, 1), s.x0))
+
+        buffer_spans: list[TextSpan] = []
+        buffer_text = ""
+
+        def flush():
+            nonlocal buffer_spans, buffer_text, chunk_index
+            text = buffer_text.strip()
+            if len(text) >= MIN_CHUNK_CHARS and buffer_spans:
+                chunk_index += 1
+                chunks.append(
+                    Chunk(
+                        chunk_index=chunk_index,
+                        page=page,
+                        text=text,
+                        page_width=buffer_spans[0].page_width,
+                        page_height=buffer_spans[0].page_height,
+                        bbox=_union_bbox(buffer_spans),
+                    )
+                )
+            buffer_spans = []
+            buffer_text = ""
+
+        for span in page_spans:
+            piece = span.text
+            if buffer_text and len(buffer_text) + len(piece) + 2 > CHUNK_TARGET_CHARS:
+                tail = buffer_text[-CHUNK_OVERLAP_CHARS:] if CHUNK_OVERLAP_CHARS else ""
+                flush()
+                buffer_text = tail
+            buffer_spans.append(span)
+            buffer_text = (buffer_text + "\n\n" + piece).strip() if buffer_text else piece
+
+        flush()
+
+    logger.info(f"[CHUNK] Built {len(chunks)} chunks across {len(by_page)} pages")
+    return chunks
+
+
+# ---------------------------------------------------------------------------
+# Embed + persist
+# ---------------------------------------------------------------------------
+def ingest_pdf(pdf_path: str, user_id: str, pdf_id: str) -> dict:
+    """
+    Full pipeline: parse PDF → chunk → embed → store in Supabase pgvector.
+    Returns {"page_count": int, "chunk_count": int}.
+    """
+    t_start = time.time()
+    logger.info(f"[INGEST] ▶ user={user_id} pdf={pdf_id} path={pdf_path}")
+
+    spans = extract_spans(pdf_path)
+    if not spans:
+        raise ValueError(
+            "No extractable text found. This PDF may be scanned or image-only."
+        )
+
+    chunks = chunk_spans(spans)
+    if not chunks:
+        raise ValueError("PDF parsed but produced no chunks (text too short).")
+
+    page_count = max(s.page for s in spans)
+
+    t0 = time.time()
+    logger.info(f"[INGEST] Embedding {len(chunks)} chunks via Gemini...")
+    embeddings = embed_documents([c.text for c in chunks])
+    logger.info(f"[INGEST] Embedded in {time.time()-t0:.2f}s")
+
+    rows = []
+    for chunk, vector in zip(chunks, embeddings):
+        rows.append(
+            {
+                "user_id": user_id,
+                "pdf_id": pdf_id,
+                "chunk_index": chunk.chunk_index,
+                "page": chunk.page,
+                "page_width": chunk.page_width,
+                "page_height": chunk.page_height,
+                "bbox": chunk.bbox,
+                "text": chunk.text,
+                "embedding": vector,
+            }
+        )
+
+    t0 = time.time()
+    insert_chunks(rows)
+    logger.info(f"[INGEST] Wrote {len(rows)} rows to Supabase in {time.time()-t0:.2f}s")
+
+    total = time.time() - t_start
+    logger.info(
+        f"[INGEST] ✅ done — {page_count} pages / {len(chunks)} chunks in {total:.2f}s"
+    )
+    return {"page_count": page_count, "chunk_count": len(chunks)}
+
+
+# ---------------------------------------------------------------------------
+# CLI entry-point (smoke test)
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    import sys
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    )
     if len(sys.argv) < 2:
-        print(" Usage: python ingest.py <path_to_pdf>")
+        print("Usage: python ingest.py <path_to_pdf> [user_id] [pdf_id]")
         sys.exit(1)
 
     pdf_file = sys.argv[1]
+    user_id = sys.argv[2] if len(sys.argv) > 2 else "cli-user"
+    pdf_id = sys.argv[3] if len(sys.argv) > 3 else "cli-pdf"
 
     if not os.path.exists(pdf_file):
-        print(f" File not found: {pdf_file}")
+        print(f"File not found: {pdf_file}")
         sys.exit(1)
 
-    nodes = process_pdf_to_nodes(pdf_file)
-
-    if not nodes:
-        print(" No nodes extracted. Exiting.")
-        sys.exit(1)
-
-    print("\n--- Sanity Check: First 5 Chunks ---")
-    for node in nodes[:5]:
-        print(f" Chunk: {node.metadata.get('formatted_citation')} | Preview: {node.text[:512]}")
-        print("-" * 60)
-
-    build_and_store_faiss_index(nodes)
+    print(ingest_pdf(pdf_file, user_id=user_id, pdf_id=pdf_id))

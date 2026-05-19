@@ -423,14 +423,17 @@
   background: var(--bg-tertiary);
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
 }
 
-.pdfIframe {
+.pdfLoading {
   flex: 1;
-  width: 100%;
-  height: 100%;
-  border: none;
-  background: white; /* PDFs usually need white bg */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 14px;
 }
 
 /* ─── Chat View ─── */
@@ -572,20 +575,29 @@
 .citationBadge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
+  gap: 5px;
+  padding: 4px 10px;
   border-radius: var(--radius-full);
   background: rgba(124, 92, 252, 0.15);
   color: var(--accent-secondary);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   transition: all var(--transition-fast);
+  font-family: inherit;
+  border: 1px solid transparent;
 }
 
 .citationBadge:hover {
   background: rgba(124, 92, 252, 0.3);
+  border-color: rgba(124, 92, 252, 0.5);
   transform: translateY(-1px);
+}
+
+.citationBadge:focus-visible {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 /* ─── Typing Indicator ─── */

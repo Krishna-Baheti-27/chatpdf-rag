@@ -1,36 +1,25 @@
-# Core Framework
-llama-index
-
-# Document Parsing (Step 1)
-llama-index-readers-file
+# --- PDF parsing ---
 PyMuPDF
 
-# Vector Database & Embeddings (Step 2)
-faiss-cpu
-llama-index-vector-stores-faiss
-llama-index-embeddings-huggingface
+# --- AI: Gemini (chat + embeddings) ---
+# google-genai is the supported successor to the deprecated google-generativeai package.
+google-genai
 
-# LLMs (Step 3 - The Brain)
-llama-index-llms-openai
-llama-index-llms-groq
-llama_parse
-
-# Web Framework
+# --- Web framework ---
 fastapi
 uvicorn[standard]
 python-multipart
 
-# Database
+# --- Database / storage ---
 motor
 pymongo
+supabase
 
-# Authentication
+# --- Auth ---
 python-jose[cryptography]
 passlib[bcrypt]
 bcrypt==4.0.1
 
-# Storage
-supabase
-
-# Utils
+# --- Misc ---
 python-dotenv
+pydantic[email]

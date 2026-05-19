@@ -1,158 +1,120 @@
 """
-Chat engine factory.
-Creates a CondensePlusContextChatEngine backed by a per-PDF FAISS index.
+RAG orchestration: embed query → retrieve from pgvector → ground with Gemini →
+attach citation metadata so the frontend can highlight bboxes in the PDF.
 """
 
-import os
-import time
-import logging
-from dotenv import load_dotenv
-from llama_index.core import (
-    StorageContext,
-    load_index_from_storage,
-    Settings,
-    SummaryIndex,
-)
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.llms.groq import Groq
-from llama_index.core.tools import QueryEngineTool, ToolMetadata
-from llama_index.core.query_engine import RouterQueryEngine
-from llama_index.core.selectors import LLMSingleSelector
-from llama_index.vector_stores.faiss import FaissVectorStore
-from llama_index.core.memory import ChatMemoryBuffer
-from llama_index.core.chat_engine import CondensePlusContextChatEngine
+from __future__ import annotations
 
-load_dotenv()
+import logging
+import re
+import time
+from typing import Any
+
+from gemini_client import condense_question, embed_query, generate_grounded_answer
+from vector_store import match_chunks
 
 logger = logging.getLogger("chatpdf.engine")
 
-# ---------------------------------------------------------------------------
-# Config (all secrets from .env, no hardcoded keys)
-# ---------------------------------------------------------------------------
-DEFAULT_PERSIST_DIR = os.path.join(os.path.dirname(__file__), "faiss_db")
-EMBED_MODEL         = "BAAI/bge-small-en-v1.5"
-GROQ_MODEL          = "llama-3.3-70b-versatile"
-TOP_K               = 5
-MEMORY_TOKENS       = 4096
+TOP_K = 5
 
-FACT_PROMPT = (
-    "You are a financial data assistant. Answer based ONLY on the provided context.\n"
-    "Rules:\n"
-    "1. If the answer is not found, reply exactly: Not found in the document.\n"
-    "2. Append citation [px:cx] at the end of every sentence containing a fact or number.\n"
-    "3. Be concise and strictly factual. No filler words."
-)
+# Exact refusal phrase mandated by the system prompt. Used to suppress citations
+# on legitimate "not found" answers.
+REFUSAL = "I could not find that in the document."
 
-SUMMARY_PROMPT = (
-    "You are a financial data assistant. Generate a comprehensive factual summary.\n"
-    "Rules:\n"
-    "1. If information is missing, say: Not found in the document.\n"
-    "2. Be direct. No apologies, no filler."
-)
-
-SYSTEM_PROMPT = (
-    "You are a financial data assistant. Answer based ONLY on the provided context.\n"
-    "Output format:\n"
-    "- List citation references first on one line.\n"
-    "- Then give the direct answer.\n"
-    "Rules:\n"
-    "1. If the answer is not present, reply exactly: Not found in the document.\n"
-    "2. Append citation [px:cx] at the end of every sentence containing a fact or number.\n"
-    "3. No filler, no apologies, no guessing."
-)
+# Match citations the model produces, e.g. [1], [2,3], [4, 5].
+_CITE_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
 
 
-def get_chat_engine(persist_dir: str | None = None):
+def _used_indices(answer: str, ctx_len: int) -> list[int]:
+    """Pull citation indices the model actually used in its answer."""
+    seen: list[int] = []
+    for match in _CITE_RE.finditer(answer):
+        for token in match.group(1).split(","):
+            token = token.strip()
+            if token.isdigit():
+                idx = int(token)
+                if 1 <= idx <= ctx_len and idx not in seen:
+                    seen.append(idx)
+    return seen
+
+
+def answer_question(
+    question: str,
+    user_id: str,
+    pdf_id: str,
+    history: list[dict] | None = None,
+) -> dict[str, Any]:
     """
-    Build and return a CondensePlusContextChatEngine.
-
-    Parameters
-    ----------
-    persist_dir : str, optional
-        Path to the FAISS index directory for a specific PDF.
-        Falls back to the default ``./faiss_db`` when not provided (CLI usage).
+    Run one RAG turn. Returns:
+      {
+        "answer": str,
+        "citations": [
+            {
+              "label": "p3#1",
+              "page": 3,
+              "bbox": [x0,y0,x1,y1],
+              "page_width": 612.0,
+              "page_height": 792.0,
+              "snippet": "first ~240 chars of the chunk",
+            }, ...
+        ],
+      }
     """
     t_start = time.time()
-    logger.info(f"[BUILD] Building chat engine (persist_dir={persist_dir})")
+    logger.info(f"[CHAT] ▶ user={user_id} pdf={pdf_id} q={question[:80]!r}")
 
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if not groq_api_key:
-        raise EnvironmentError("GROQ_API_KEY not set in .env file.")
+    # 1. Condense follow-up questions into standalone form for retrieval.
+    #    The original question is still used for the final grounded prompt.
+    t0 = time.time()
+    retrieval_query = condense_question(question, history or [])
+    logger.info(f"[CHAT] condensed in {time.time()-t0:.2f}s")
+
+    # 2. Embed the retrieval query and pull top-k chunks.
+    t0 = time.time()
+    q_vec = embed_query(retrieval_query)
+    logger.info(f"[CHAT] embedded query in {time.time()-t0:.2f}s")
 
     t0 = time.time()
-    Settings.embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL)
-    Settings.llm         = Groq(model=GROQ_MODEL, api_key=groq_api_key, temperature=0.0)
-    logger.info(f"[BUILD] Models loaded in {time.time()-t0:.2f}s")
+    retrieved = match_chunks(q_vec, user_id=user_id, pdf_id=pdf_id, top_k=TOP_K)
+    logger.info(f"[CHAT] retrieved {len(retrieved)} chunks in {time.time()-t0:.2f}s")
 
-    persist_dir = persist_dir or DEFAULT_PERSIST_DIR
+    if not retrieved:
+        return {"answer": REFUSAL, "citations": []}
 
-    if not os.path.exists(persist_dir):
-        raise FileNotFoundError(f"FAISS index not found at {persist_dir}. Run ingest.py first.")
-
+    # 3. Ground with Gemini using the original question wording.
     t0 = time.time()
-    vector_store    = FaissVectorStore.from_persist_dir(persist_dir)
-    storage_context = StorageContext.from_defaults(
-        vector_store=vector_store,
-        persist_dir=persist_dir,
+    answer = generate_grounded_answer(question, retrieved, history=history)
+    logger.info(f"[CHAT] gemini responded in {time.time()-t0:.2f}s")
+
+    # 4. If the model legitimately refused, don't fake a citation.
+    if REFUSAL in answer:
+        logger.info("[CHAT] refusal detected — emitting no citations")
+        return {"answer": REFUSAL, "citations": []}
+
+    used = _used_indices(answer, len(retrieved))
+    # Fallback: model answered but forgot to cite — surface the top-1 chunk so
+    # the user still has a clickable source.
+    if not used:
+        used = [1]
+
+    citations = []
+    for idx in used:
+        chunk = retrieved[idx - 1]
+        snippet = chunk["text"].strip().replace("\n", " ")
+        if len(snippet) > 240:
+            snippet = snippet[:240].rstrip() + "…"
+        citations.append(
+            {
+                "label": f"p{chunk['page']}#{chunk['chunk_index']}",
+                "page": chunk["page"],
+                "bbox": chunk["bbox"],
+                "page_width": chunk["page_width"],
+                "page_height": chunk["page_height"],
+                "snippet": snippet,
+            }
+        )
+
+    logger.info(
+        f"[CHAT] ✅ done in {time.time()-t_start:.2f}s — {len(citations)} citations"
     )
-    index = load_index_from_storage(storage_context=storage_context)
-    logger.info(f"[BUILD] FAISS index loaded in {time.time()-t0:.2f}s")
-
-    # --- Fact-retrieval tool ---
-    t0 = time.time()
-    fact_engine = index.as_query_engine(
-        similarity_top_k=TOP_K,
-        system_prompt=FACT_PROMPT,
-    )
-    fact_tool = QueryEngineTool(
-        query_engine=fact_engine,
-        metadata=ToolMetadata(
-            name="fact_tool",
-            description="Use for specific numbers, figures, and factual queries.",
-        ),
-    )
-
-    # --- Summary tool ---
-    all_nodes      = list(index.docstore.docs.values())
-    summary_index  = SummaryIndex(all_nodes)
-    summary_engine = summary_index.as_query_engine(
-        response_mode="tree_summarize",
-        system_prompt=SUMMARY_PROMPT,
-    )
-    summary_tool = QueryEngineTool(
-        query_engine=summary_engine,
-        metadata=ToolMetadata(
-            name="summary_tool",
-            description="Use only for summarize, overview, or describe requests.",
-        ),
-    )
-
-    # --- Router engine ---
-    router_engine = RouterQueryEngine(
-        selector=LLMSingleSelector.from_defaults(),
-        query_engine_tools=[fact_tool, summary_tool],
-        verbose=False,
-    )
-    logger.info(f"[BUILD] Query engines & router built in {time.time()-t0:.2f}s")
-
-    # --- Chat engine with memory ---
-    memory = ChatMemoryBuffer.from_defaults(token_limit=MEMORY_TOKENS)
-
-    chat_engine = CondensePlusContextChatEngine.from_defaults(
-        query_engine=router_engine,
-        retriever=index.as_retriever(similarity_top_k=TOP_K),
-        memory=memory,
-        system_prompt=SYSTEM_PROMPT,
-    )
-
-    logger.info(f"[BUILD] ✅ Chat engine ready — total build time: {time.time()-t_start:.2f}s")
-    return chat_engine
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    try:
-        engine = get_chat_engine()
-        logger.info("Engine ready.")
-    except Exception as e:
-        logger.error(f"Error: {e}")
+    return {"answer": answer, "citations": citations}

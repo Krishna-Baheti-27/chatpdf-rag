@@ -1,34 +1,29 @@
-const API_BASE = "http://localhost:8000";
+const API_BASE =
+  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL) ||
+  "http://localhost:8000";
+
+export function getApiBase() {
+  return API_BASE;
+}
 
 /**
- * Wrapper around fetch that adds auth headers and handles JSON.
+ * fetch wrapper that adds auth + JSON handling.
  */
 async function apiFetch(path, options = {}) {
   const token =
     typeof window !== "undefined" ? localStorage.getItem("token") : null;
 
-  const headers = {
-    ...(options.headers || {}),
-  };
-
-  // Don't set Content-Type for FormData (browser sets it with boundary)
+  const headers = { ...(options.headers || {}) };
   if (!(options.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
   }
-
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
+  if (token) headers["Authorization"] = `Bearer ${token}`;
 
   const method = options.method || "GET";
   const startTime = performance.now();
   console.log(`[API] → ${method} ${path}`);
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers,
-  });
-
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
   const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
 
   if (res.status === 204) {
@@ -36,14 +31,19 @@ async function apiFetch(path, options = {}) {
     return null;
   }
 
-  const data = await res.json();
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    // non-JSON response (rare on this API)
+  }
 
   if (!res.ok) {
     console.error(`[API] ← ${method} ${path} → ${res.status} (${elapsed}s)`, data);
-    throw new Error(data.detail || "Something went wrong");
+    throw new Error(data?.detail || `Request failed (${res.status})`);
   }
 
-  console.log(`[API] ← ${method} ${path} → ${res.status} (${elapsed}s)`, data);
+  console.log(`[API] ← ${method} ${path} → ${res.status} (${elapsed}s)`);
   return data;
 }
 
@@ -78,10 +78,7 @@ export function logout() {
 export async function uploadPdf(file) {
   const formData = new FormData();
   formData.append("file", file);
-  return apiFetch("/api/pdfs/upload", {
-    method: "POST",
-    body: formData,
-  });
+  return apiFetch("/api/pdfs/upload", { method: "POST", body: formData });
 }
 
 export async function listPdfs() {
@@ -92,11 +89,9 @@ export async function deletePdf(pdfId) {
   return apiFetch(`/api/pdfs/${pdfId}`, { method: "DELETE" });
 }
 
-export function getPdfViewUrl(pdfId, page) {
+export function getPdfViewUrl(pdfId) {
   const token = typeof window !== "undefined" ? localStorage.getItem("token") : "";
-  let url = `${API_BASE}/api/pdfs/${pdfId}/view?token=${token}`;
-  if (page) url += `#page=${page}`;
-  return url;
+  return `${API_BASE}/api/pdfs/${pdfId}/view?token=${encodeURIComponent(token || "")}`;
 }
 
 // ── Chats ──────────────────────────────────────────────────────────
