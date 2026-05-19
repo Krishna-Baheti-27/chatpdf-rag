@@ -1,9 +1,24 @@
 # ChatPDF — AI-Powered Document Assistant
 
+## Landing Page
+
 <p align="center">
+  <img src="./images/home.png" alt="Landing Page" width="100%" />
+</p>
+
+<p align="center">
+  🚀 Live Website:
   <a href="https://chatpdf-rag.vercel.app/">
-    <img src="./images/home.png" />
+    https://chatpdf-rag.vercel.app/
   </a>
+</p>
+
+---
+
+## Main Query Interface
+
+<p align="center">
+  <img src="./images/query.png" alt="Main Query Interface" width="100%" />
 </p>
 
 > Upload any text-based PDF and chat with it. Every cited fact links back to the **exact source rectangle** on the **exact page** — clicking a citation scrolls the in-app PDF viewer to that page and pulses a coloured highlight over the source bbox.
